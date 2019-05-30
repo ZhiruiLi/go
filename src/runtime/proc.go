@@ -4755,6 +4755,9 @@ const randomizeScheduler = raceenabled
 // If next is true, runqput puts g in the _p_.runnext slot.
 // If the run queue is full, runnext puts g on the global queue.
 // Executed only by the owner P.
+// 尝试将 g 放入本地队列
+// 若 next == true，则有 50% 的概率将 g 放入 runnext（优先被执行）
+// 若本地队列满了，则将其放入全局队列
 func runqput(_p_ *p, gp *g, next bool) {
 	if randomizeScheduler && next && fastrand()%2 == 0 {
 		next = false
@@ -4767,10 +4770,10 @@ func runqput(_p_ *p, gp *g, next bool) {
 			goto retryNext
 		}
 		if oldnext == 0 {
-			return
+			return // 之前 runnext 为空，此时不需要继续插入了，可以直接返回
 		}
 		// Kick the old runnext out to the regular run queue.
-		gp = oldnext.ptr()
+		gp = oldnext.ptr() // 替换了 gp，接下来是将之前的 runnext 放入队列中
 	}
 
 retry:
@@ -4833,6 +4836,7 @@ func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
 // If inheritTime is true, gp should inherit the remaining time in the
 // current time slice. Otherwise, it should start a new time slice.
 // Executed only by the owner P.
+// 从本地的队列中获取一个 g
 func runqget(_p_ *p) (gp *g, inheritTime bool) {
 	// If there's a runnext, it's the next G to run.
 	for {
@@ -4840,18 +4844,24 @@ func runqget(_p_ *p) (gp *g, inheritTime bool) {
 		if next == 0 {
 			break
 		}
+		// 优先获取 runnext
+		// 如果获取到了，那就可以直接返回了
 		if _p_.runnext.cas(next, 0) {
 			return next.ptr(), true
 		}
 	}
 
 	for {
+		// 原子获取 runqhead，由于存在工作窃取的逻辑，所以这里和上面都需要原子操作
 		h := atomic.LoadAcq(&_p_.runqhead) // load-acquire, synchronize with other consumers
+		// 直接获取 runqtail，这里不需要原子获取，因为往队列里添加的操作只可能是本线程的处理
 		t := _p_.runqtail
-		if t == h {
+		if t == h { // 队列是空的，直接返回了
 			return nil, false
 		}
+		// 拿到 runqhead 位置的数据（runqhead 是不断累加的，这里需要求模值以确保不越界）
 		gp := _p_.runq[h%uint32(len(_p_.runq))].ptr()
+		// runqhead 原子 + 1
 		if atomic.CasRel(&_p_.runqhead, h, h+1) { // cas-release, commits consume
 			return gp, false
 		}
