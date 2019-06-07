@@ -2167,6 +2167,7 @@ func execute(gp *g, inheritTime bool) {
 
 // Finds a runnable goroutine to execute.
 // Tries to steal from other P's, get g from global queue, poll network.
+// 找到可以执行的 goroutine
 func findrunnable() (gp *g, inheritTime bool) {
 	_g_ := getg()
 
@@ -2175,6 +2176,7 @@ func findrunnable() (gp *g, inheritTime bool) {
 	// an M.
 
 top:
+	// gc
 	_p_ := _g_.m.p.ptr()
 	if sched.gcwaiting != 0 {
 		gcstopm()
@@ -2193,11 +2195,13 @@ top:
 	}
 
 	// local runq
+	// 还是要优先查看一下本地的 runq
 	if gp, inheritTime := runqget(_p_); gp != nil {
 		return gp, inheritTime
 	}
 
 	// global runq
+	// 如果本地没有，那就查看全局的 runq
 	if sched.runqsize != 0 {
 		lock(&sched.lock)
 		gp := globrunqget(_p_, 0)
@@ -2207,6 +2211,7 @@ top:
 		}
 	}
 
+	// 网络操作，忽略。
 	// Poll network.
 	// This netpoll is only an optimization before we resort to stealing.
 	// We can safely skip it if there are no waiters or a thread is blocked
@@ -2342,6 +2347,7 @@ stop:
 	}
 
 	// Check for idle-priority GC work again.
+	// 这里在做 GC 相关的工作，略去不看
 	if gcBlackenEnabled != 0 && gcMarkWorkAvailable(nil) {
 		lock(&sched.lock)
 		_p_ = pidleget()
@@ -2362,6 +2368,7 @@ stop:
 	}
 
 	// poll network
+	// 这块在做网络相关的操作，略去不看
 	if netpollinited() && atomic.Load(&netpollWaiters) > 0 && atomic.Xchg64(&sched.lastpoll, 0) != 0 {
 		if _g_.m.p != 0 {
 			throw("findrunnable: netpoll with p")
@@ -4877,7 +4884,7 @@ func runqgrab(_p_ *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool
 		h := atomic.LoadAcq(&_p_.runqhead) // load-acquire, synchronize with other consumers
 		t := atomic.LoadAcq(&_p_.runqtail) // load-acquire, synchronize with the producer
 		n := t - h
-		n = n - n/2
+		n = n - n/2 // n/2 或 n/2 + 1
 		if n == 0 {
 			if stealRunNextG {
 				// Try to steal from _p_.runnext.
@@ -4911,6 +4918,9 @@ func runqgrab(_p_ *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool
 			}
 			return 0
 		}
+		// 这里需要进行判断，由于 h 和 t 的读取是两个原子操作，可能会出现 h 获取之后，
+		// h 和 t 都发生了比较大的变化以至于 n/2 > len/2，
+		// 如果出现了这种情况，就应该再次获取，避免出错
 		if n > uint32(len(_p_.runq)/2) { // read inconsistent h and t
 			continue
 		}
@@ -4918,6 +4928,7 @@ func runqgrab(_p_ *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool
 			g := _p_.runq[(h+i)%uint32(len(_p_.runq))]
 			batch[(batchHead+i)%uint32(len(batch))] = g
 		}
+		// 这里进行原子操作，如果发现两次的 h 不一样，那么前面的窃取操作就废弃掉，重新执行
 		if atomic.CasRel(&_p_.runqhead, h, h+n) { // cas-release, commits consume
 			return n
 		}
@@ -4927,6 +4938,8 @@ func runqgrab(_p_ *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool
 // Steal half of elements from local runnable queue of p2
 // and put onto local runnable queue of p.
 // Returns one of the stolen elements (or nil if failed).
+// 工作窃取
+// 每次窃取操作会窃取对方一半的 g
 func runqsteal(_p_, p2 *p, stealRunNextG bool) *g {
 	t := _p_.runqtail
 	n := runqgrab(p2, &_p_.runq, t, stealRunNextG)
