@@ -80,7 +80,9 @@ var modinfo string
 // for nmspinning manipulation.
 
 var (
-	m0           m
+	// 进程的主线程对应的 m 结构体
+	m0 m
+	// m0 中的 g0
 	g0           g
 	raceprocctx0 uintptr
 )
@@ -519,6 +521,7 @@ func cpuinit() {
 	arm64HasATOMICS = cpu.ARM64.HasATOMICS
 }
 
+// 对于 linux amd64，这个过程在 asm_amd64.s 的 runtime·rt0_go 中
 // The bootstrap sequence is:
 //
 //	call osinit
@@ -530,17 +533,21 @@ func cpuinit() {
 func schedinit() {
 	// raceinit must be the first call to race detector.
 	// In particular, it must be done before mallocinit below calls racemapshadow.
+	// getg 没有定义，是编译器黑魔法，类似插入这样的汇编：get_tls(CX); MOVQ g(CX), BX;
+	// 这里的 _g_ 就是全局的 g0
 	_g_ := getg()
 	if raceenabled {
 		_g_.racectx, raceprocctx0 = raceinit()
 	}
 
+	// m 的最大值
 	sched.maxmcount = 10000
 
 	tracebackinit()
 	moduledataverify()
 	stackinit()
 	mallocinit()
+	// 初始化 m0，因为全局的 g0 的 m 就是 m0
 	mcommoninit(_g_.m)
 	cpuinit()       // must run before alginit
 	alginit()       // maps must not be used before this call
@@ -557,6 +564,7 @@ func schedinit() {
 	gcinit()
 
 	sched.lastpoll = uint64(nanotime())
+	// 默认情况下 p 的数量就是 ncpu，如果传递了 GOMAXPROCS，则数量修改为 GOMAXPROCS
 	procs := ncpu
 	if n, ok := atoi32(gogetenv("GOMAXPROCS")); ok && n > 0 {
 		procs = n
@@ -602,7 +610,9 @@ func checkmcount() {
 	}
 }
 
+// m 的初始化
 func mcommoninit(mp *m) {
+	// 对于 m0 这里拿到的是 g0
 	_g_ := getg()
 
 	// g0 stack won't make sense for user (and is not necessary unwindable).
@@ -610,12 +620,14 @@ func mcommoninit(mp *m) {
 		callers(1, mp.createstack[:])
 	}
 
+	// 获取这个 m 的 ID，并将全局调度器中的 m 计数增加
 	lock(&sched.lock)
 	if sched.mnext+1 < sched.mnext {
 		throw("runtime: thread ID overflow")
 	}
 	mp.id = sched.mnext
 	sched.mnext++
+	// 检查 m 的数量，确保不超过最大值（10000）
 	checkmcount()
 
 	mp.fastrand[0] = 1597334677 * uint32(mp.id)
@@ -624,6 +636,7 @@ func mcommoninit(mp *m) {
 		mp.fastrand[1] = 1
 	}
 
+	// 创建用于信号处理的 gsignal（就是一个 g）
 	mpreinit(mp)
 	if mp.gsignal != nil {
 		mp.gsignal.stackguard1 = mp.gsignal.stack.lo + _StackGuard
@@ -631,6 +644,7 @@ func mcommoninit(mp *m) {
 
 	// Add to allm so garbage collector doesn't free g->m
 	// when it is just in a register or thread-local storage.
+	// 将这个 m 挂到全局的列表中（目的是防止被 GC 释放）
 	mp.alllink = allm
 
 	// NumCgoCall() iterates over allm w/o schedlock,
@@ -1144,9 +1158,13 @@ func startTheWorldWithSema(emitTraceEvent bool) int64 {
 //
 //go:nosplit
 //go:nowritebarrierrec
+// m 的执行入口
+// m0 的 mstart 在 asm_amd64.s 的 runtime·rt0_go 中调用
 func mstart() {
 	_g_ := getg()
 
+	// 也即 g 还没初始化
+	// 对于 g0 而言，肯定是已经初始化了，所以此处 stack 的两个指针肯定不是 0
 	osStack := _g_.stack.lo == 0
 	if osStack {
 		// Initialize stack bounds from system stack.
@@ -1188,8 +1206,13 @@ func mstart1() {
 	// for terminating the thread.
 	// We're never coming back to mstart1 after we call schedule,
 	// so other calls can reuse the current frame.
+	// getcallerpc 获取 mstart1 被调用时的程序计数器
+	// getcallersp 获取 mstart1 被调用时的栈顶地址
+	// 这里会将这些寄存器的数据记录到当前 g 的 sched 里
 	save(getcallerpc(), getcallersp())
+	// linux 下是空的调用
 	asminit()
+	// 信号初始化之类的工作
 	minit()
 
 	// Install signal handlers; after minit so that minit can
@@ -1206,6 +1229,7 @@ func mstart1() {
 		acquirep(_g_.m.nextp.ptr())
 		_g_.m.nextp = 0
 	}
+	// 开始调度，这个函数不会返回
 	schedule()
 }
 
@@ -2466,6 +2490,7 @@ func injectglist(glist *gList) {
 
 // One round of scheduler: find a runnable goroutine and execute it.
 // Never returns.
+//
 func schedule() {
 	_g_ := getg()
 
@@ -2512,18 +2537,26 @@ top:
 		gp = gcController.findRunnableGCWorker(_g_.m.p.ptr())
 		tryWakeP = tryWakeP || gp != nil
 	}
+
 	if gp == nil {
 		// Check the global runnable queue once in a while to ensure fairness.
 		// Otherwise two goroutines can completely occupy the local runqueue
 		// by constantly respawning each other.
+		// 为了确保调度的公平性，每调度 61 次就会优先调度一次全局队列中的 g
 		if _g_.m.p.ptr().schedtick%61 == 0 && sched.runqsize > 0 {
+			// 全局队列的访问需要加锁因此效率较低，这也是局部队列存在的目的之一
 			lock(&sched.lock)
+			// 从全局队列中拿出一个 g
 			gp = globrunqget(_g_.m.p.ptr(), 1)
+			// 解锁
 			unlock(&sched.lock)
 		}
 	}
 	if gp == nil {
+		// 从局部队列中拿一个 g
+		// 这里通过当前 g 的 m，也即当前 m 关联的 p 中拿到一个 g
 		gp, inheritTime = runqget(_g_.m.p.ptr())
+		// m 不应该存在于自旋状态，因为 m 取窃取别的 g 时才会自旋，此时获取本地队列不应该自旋
 		if gp != nil && _g_.m.spinning {
 			throw("schedule: spinning with local work")
 		}
@@ -3995,6 +4028,7 @@ func (pp *p) destroy() {
 // gcworkbufs are not being modified by either the GC or
 // the write barrier code.
 // Returns list of Ps with local work, they need to be scheduled by the caller.
+// 创建和初始化 p
 func procresize(nprocs int32) *p {
 	old := gomaxprocs
 	if old < 0 || nprocs <= 0 {
