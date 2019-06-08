@@ -554,10 +554,13 @@ type m struct {
 // 结构体 p/processor 记录线程执行代码时的的一些信息
 // 一个 p 需要一个 m 才能运行，但是 m 可能会执行不同的 p，这些运行时信息就记录在 p 里
 type p struct {
+	// allp 数组下标
 	id int32
 	// p 的状态
-	status      uint32 // one of pidle/prunning/...
-	link        puintptr
+	status uint32 // one of pidle/prunning/...
+	// 单向链表，指向下一个P的地址
+	link puintptr
+	// 计数器，每调度一次加 1
 	schedtick   uint32     // incremented on every scheduler call
 	syscalltick uint32     // incremented on every system call
 	sysmontick  sysmontick // last tick observed by sysmon
@@ -599,6 +602,8 @@ type p struct {
 		n int32
 	}
 
+	// 阻塞在 channel 的 g
+	// 注意，一个 g 可能有多个 sudog 与之对应
 	sudogcache []*sudog
 	sudogbuf   [128]*sudog
 
@@ -682,6 +687,7 @@ type schedt struct {
 	}
 
 	// Global cache of dead G's.
+	// 缓存已经结束的 groutine 对应的 g，避免反复分配 g 结构
 	gFree struct {
 		lock    mutex
 		stack   gList // Gs with stacks
@@ -942,15 +948,20 @@ func (w waitReason) String() string {
 }
 
 var (
-	allglen    uintptr
-	allm       *m
-	allp       []*p  // len(allp) == gomaxprocs; may change at safe points, otherwise immutable
-	allpLock   mutex // Protects P-less reads of allp and all writes
+	allglen uintptr
+	// 所有的 m
+	allm *m
+	// 所有的 p，len(allp) == gomaxprocs
+	allp     []*p  // len(allp) == gomaxprocs; may change at safe points, otherwise immutable
+	allpLock mutex // Protects P-less reads of allp and all writes
+	// p 的最大数量，默认情况下为 ncpu
 	gomaxprocs int32
-	ncpu       int32
-	forcegc    forcegcstate
-	sched      schedt
-	newprocs   int32
+	// cpu 的核数，由 runtime 在 init 时初始化
+	ncpu    int32
+	forcegc forcegcstate
+	// 调度器对象
+	sched    schedt
+	newprocs int32
 
 	// Information about what cpu features are available.
 	// Packages outside the runtime should not use these

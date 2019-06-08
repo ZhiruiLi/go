@@ -458,6 +458,7 @@ func lockedOSThread() bool {
 }
 
 var (
+	// 所有的 g
 	allgs    []*g
 	allglock mutex
 )
