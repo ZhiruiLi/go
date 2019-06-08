@@ -2159,9 +2159,12 @@ func gcstopm() {
 // acquiring a P in several places.
 //
 //go:yeswritebarrierrec
+// 将给定的 g 调度到本 m 上执行
 func execute(gp *g, inheritTime bool) {
+	// 这里获取的是当前执行的 g，gp 是将要被执行的 g
 	_g_ := getg()
 
+	// 设置 gp 的状态为 running
 	casgstatus(gp, _Grunnable, _Grunning)
 	gp.waitsince = 0
 	gp.preempt = false
@@ -2169,6 +2172,7 @@ func execute(gp *g, inheritTime bool) {
 	if !inheritTime {
 		_g_.m.p.ptr().schedtick++
 	}
+	// 将 g 和 m 关联起来
 	_g_.m.curg = gp
 	gp.m = _g_.m
 
@@ -2187,6 +2191,9 @@ func execute(gp *g, inheritTime bool) {
 		traceGoStart()
 	}
 
+	// 这里将给定的 g 真正替代当前的 g
+	// 这个函数用汇编实现，因为需要保存和修改寄存器里的状态，使用 go 无法做到
+	// 参考 asm_amd64.s 中的 runtime·gogo
 	gogo(&gp.sched)
 }
 
@@ -2490,7 +2497,9 @@ func injectglist(glist *gList) {
 
 // One round of scheduler: find a runnable goroutine and execute it.
 // Never returns.
-//
+// 开始调度
+// 这里的过程是：schedule -> execute -> gogo -> 用户代码 -> goexit -> goexit1 -> mcall -> goexit0 -> schedule
+// 所以这里 schedule 永远都不会返回
 func schedule() {
 	_g_ := getg()
 
@@ -2510,6 +2519,7 @@ func schedule() {
 	}
 
 top:
+	// 这里是一些 gc 的处理
 	if sched.gcwaiting != 0 {
 		gcstopm()
 		goto top
@@ -2562,6 +2572,7 @@ top:
 		}
 	}
 	if gp == nil {
+		// 尝试去找到可执行的 g，如果找不到就睡眠
 		gp, inheritTime = findrunnable() // blocks until work is available
 	}
 
@@ -2603,6 +2614,7 @@ top:
 		goto top
 	}
 
+	// 具体开始执行这个 g
 	execute(gp, inheritTime)
 }
 
