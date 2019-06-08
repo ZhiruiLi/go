@@ -379,11 +379,13 @@ type wincallbackcontext struct {
 // Stack describes a Go execution stack.
 // The bounds of the stack are exactly [lo, hi),
 // with no implicit data structures on either side.
+// 记录 goroutine 所使用的栈的信息
 type stack struct {
 	lo uintptr
 	hi uintptr
 }
 
+// 结构体 g 表示了一个 goroutine
 type g struct {
 	// Stack parameters.
 	// stack describes the actual stack memory: [stack.lo, stack.hi).

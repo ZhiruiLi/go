@@ -125,6 +125,7 @@ func cgocall(fn, arg unsafe.Pointer) int32 {
 	// "system call", run the Go code (which may grow the stack),
 	// and then re-enter the "system call" reusing the PC and SP
 	// saved by entersyscall here.
+	// CGO 的调用中也会调用这个函数，避免阻塞
 	entersyscall()
 
 	mp.incgo = true
