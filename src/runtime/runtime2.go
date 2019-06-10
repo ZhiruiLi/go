@@ -328,7 +328,7 @@ type gobuf struct {
 // sudog represents a g in a wait list, such as for sending/receiving
 // on a channel.
 //
-// sudog is necessary because the g ↔ synchronization object relation
+// sudog is necessary because the g ↔ synchronization object relation <- 注意这里说明了为啥需要有 sudog
 // is many-to-many. A g can be on many wait lists, so there may be
 // many sudogs for one g; and many gs may be waiting on the same
 // synchronization object, so there may be many sudogs for one object.

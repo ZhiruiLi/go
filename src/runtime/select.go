@@ -112,6 +112,7 @@ func block() {
 // ordinal position of its respective select{recv,send,default} call.
 // Also, if the chosen scase was a receive operation, it reports whether
 // a value was received.
+// select 的实现
 func selectgo(cas0 *scase, order0 *uint16, ncases int) (int, bool) {
 	if debugSelect {
 		print("select: cas0=", cas0, "\n")
@@ -120,9 +121,12 @@ func selectgo(cas0 *scase, order0 *uint16, ncases int) (int, bool) {
 	cas1 := (*[1 << 16]scase)(unsafe.Pointer(cas0))
 	order1 := (*[1 << 17]uint16)(unsafe.Pointer(order0))
 
-	scases := cas1[:ncases:ncases]
-	pollorder := order1[:ncases:ncases]
-	lockorder := order1[ncases:][:ncases:ncases]
+	// [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+	// 假设 ncases == 3
+	// 则
+	scases := cas1[:ncases:ncases]               // [0, 2]
+	pollorder := order1[:ncases:ncases]          // [0, 2]
+	lockorder := order1[ncases:][:ncases:ncases] // [3, 5]
 
 	// Replace send/receive cases involving nil channels with
 	// caseNil so logic below can assume non-nil channel.
@@ -150,6 +154,11 @@ func selectgo(cas0 *scase, order0 *uint16, ncases int) (int, bool) {
 	// optimizing (and needing to test).
 
 	// generate permuted order
+	// 随机排列一下顺序
+	// 这里为什么不用调度时候的伪随机序列？
+	// 可能是因为效率考虑，
+	// 首先 ncases 不会很大，另外，这里一般来说没有一个固定的值。
+	// p 的数量是固定的，所以可以提前缓存一堆互质数，但是这里不行。
 	for i := 1; i < ncases; i++ {
 		j := fastrandn(uint32(i + 1))
 		pollorder[i] = pollorder[j]
@@ -158,6 +167,7 @@ func selectgo(cas0 *scase, order0 *uint16, ncases int) (int, bool) {
 
 	// sort the cases by Hchan address to get the locking order.
 	// simple heap sort, to guarantee n log n time and constant stack footprint.
+	// 加锁的时候要按地址顺序，避免死锁
 	for i := 0; i < ncases; i++ {
 		j := i
 		// Start with the pollorder to permute cases on the same channel.

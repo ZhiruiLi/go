@@ -36,10 +36,14 @@ type hchan struct {
 	elemsize uint16
 	closed   uint32
 	elemtype *_type // element type
-	sendx    uint   // send index
-	recvx    uint   // receive index
-	recvq    waitq  // list of recv waiters
-	sendq    waitq  // list of send waiters
+	// 发送下标（循环队列）
+	sendx uint // send index
+	// 接收下标（循环队列）
+	recvx uint // receive index
+	// 发送者
+	recvq waitq // list of recv waiters
+	// 接收者
+	sendq waitq // list of send waiters
 
 	// lock protects all fields in hchan, as well as several
 	// fields in sudogs blocked on this channel.
@@ -402,6 +406,7 @@ func closechan(c *hchan) {
 
 // entry points for <- c from compiled code
 //go:nosplit
+// channel 读取时候的入口
 func chanrecv1(c *hchan, elem unsafe.Pointer) {
 	chanrecv(c, elem, true)
 }
@@ -457,8 +462,10 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 		t0 = cputicks()
 	}
 
+	// 注意这里要加锁
 	lock(&c.lock)
 
+	// 如果已经关闭且里面内容数量为 0 了，那就可以直接返回了
 	if c.closed != 0 && c.qcount == 0 {
 		if raceenabled {
 			raceacquire(c.raceaddr())
@@ -470,15 +477,20 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 		return true, false
 	}
 
+	// 看一下有没有发送者在发送
+	// 如果有，就可以立刻接收了，但这里还要多做一个判断，就是是否是 buffered chan，
+	// 如果不是，那就直接接收发送者的数据，如果是，则需要接收第一个数据然后把发送者的数据放在尾部
 	if sg := c.sendq.dequeue(); sg != nil {
 		// Found a waiting sender. If buffer is size 0, receive value
 		// directly from sender. Otherwise, receive from head of queue
 		// and add sender's value to the tail of the queue (both map to
 		// the same buffer slot because the queue is full).
+		// 这里不用解锁，因为 recv 内部会解锁
 		recv(c, sg, ep, func() { unlock(&c.lock) }, 3)
 		return true, true
 	}
 
+	// 如果没有发送者，那就直接看一下有没有 buffer 数据
 	if c.qcount > 0 {
 		// Receive directly from queue
 		qp := chanbuf(c, c.recvx)
@@ -487,6 +499,7 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 			racerelease(qp)
 		}
 		if ep != nil {
+			// 移动数据
 			typedmemmove(c.elemtype, ep, qp)
 		}
 		typedmemclr(c.elemtype, qp)
@@ -499,12 +512,14 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 		return true, true
 	}
 
+	// 如果这个操作不阻塞，那就直接解锁返回了
 	if !block {
 		unlock(&c.lock)
 		return false, false
 	}
 
 	// no sender available: block on this channel.
+	// 如果这个操作需要阻塞，这里就需要
 	gp := getg()
 	mysg := acquireSudog()
 	mysg.releasetime = 0
@@ -521,6 +536,7 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 	mysg.c = c
 	gp.param = nil
 	c.recvq.enqueue(mysg)
+	// 这里将当前的 goroutine 阻塞
 	goparkunlock(&c.lock, waitReasonChanReceive, traceEvGoBlockRecv, 3)
 
 	// someone woke us up

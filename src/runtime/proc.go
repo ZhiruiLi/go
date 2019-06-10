@@ -675,7 +675,9 @@ func ready(gp *g, traceskip int, next bool) {
 	}
 
 	// status is Gwaiting or Gscanwaiting, make Grunnable and put on runq
+	// 将 goroutine 状态设置为 runnable
 	casgstatus(gp, _Gwaiting, _Grunnable)
+	// 放入队列等待调度
 	runqput(_g_.m.p.ptr(), gp, next)
 	if atomic.Load(&sched.npidle) != 0 && atomic.Load(&sched.nmspinning) == 0 {
 		wakep()
@@ -2645,7 +2647,9 @@ func park_m(gp *g) {
 		traceGoPark(_g_.m.waittraceev, _g_.m.waittraceskip)
 	}
 
+	// 设置状态为 waiting
 	casgstatus(gp, _Grunning, _Gwaiting)
+	// 解除 m 与 g 的关系
 	dropg()
 
 	if fn := _g_.m.waitunlockf; fn != nil {
@@ -4819,15 +4823,18 @@ func runqput(_p_ *p, gp *g, next bool) {
 
 	if next {
 	retryNext:
+		// 如果 next == true，就优先把 g 放在 runnext 里，会被优先调度
 		oldnext := _p_.runnext
 		if !_p_.runnext.cas(oldnext, guintptr(unsafe.Pointer(gp))) {
 			goto retryNext
 		}
 		if oldnext == 0 {
-			return // 之前 runnext 为空，此时不需要继续插入了，可以直接返回
+			// 之前 runnext 为空，此时不需要继续插入了，可以直接返回
+			return
 		}
 		// Kick the old runnext out to the regular run queue.
-		gp = oldnext.ptr() // 替换了 gp，接下来是将之前的 runnext 放入队列中
+		// 替换了 gp，接下来是将之前的 runnext 放入队列中
+		gp = oldnext.ptr()
 	}
 
 retry:
@@ -4838,6 +4845,7 @@ retry:
 		atomic.StoreRel(&_p_.runqtail, t+1) // store-release, makes the item available for consumption
 		return
 	}
+	// 如果本地队列满了就要放全局，这个效率会比较低
 	if runqputslow(_p_, gp, h, t) {
 		return
 	}
