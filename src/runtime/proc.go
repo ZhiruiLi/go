@@ -29,19 +29,19 @@ var modinfo string
 // Design doc at https://golang.org/s/go11sched.
 
 // Worker thread parking/unparking.
-// We need to balance between keeping enough running worker threads to utilize
-// available hardware parallelism and parking excessive running worker threads
-// to conserve CPU resources and power. This is not simple for two reasons:
-// (1) scheduler state is intentionally distributed (in particular, per-P work
+// We need to balance between keeping enough running worker threads to utilize 利用
+// available hardware parallelism and parking excessive 过多的 running worker threads
+// to conserve 保存 CPU resources and power. This is not simple for two reasons:
+// (1) scheduler state is intentionally 故意地 distributed 分布式的 (in particular, per-P work
 // queues), so it is not possible to compute global predicates on fast paths;
 // (2) for optimal thread management we would need to know the future (don't park
-// a worker thread when a new goroutine will be readied in near future).
+// a worker thread when a new goroutine will be readied 准备好 in near future).
 //
 // Three rejected approaches that would work badly:
 // 1. Centralize all scheduler state (would inhibit scalability).
 // 2. Direct goroutine handoff. That is, when we ready a new goroutine and there
-//    is a spare P, unpark a thread and handoff it the thread and the goroutine.
-//    This would lead to thread state thrashing, as the thread that readied the
+//    is a spare 多余的、备用的、备用零件 P, unpark a thread and handoff it the thread and the goroutine.
+//    This would lead to thread state thrashing 乱窜[跳]、辗转反侧、大败, as the thread that readied the
 //    goroutine can be out of work the very next moment, we will need to park it.
 //    Also, it would destroy locality of computation as we want to preserve
 //    dependent goroutines on the same thread; and introduce additional latency.
@@ -62,16 +62,16 @@ var modinfo string
 // execution. If it does not find work it takes itself out of the spinning state
 // and then parks.
 // If there is at least one spinning thread (sched.nmspinning>1), we don't unpark
-// new threads when readying goroutines. To compensate for that, if the last spinning
+// new threads when readying goroutines. To compensate 补偿 for that, if the last spinning
 // thread finds work and stops spinning, it must unpark a new spinning thread.
-// This approach smooths out unjustified spikes of thread unparking,
-// but at the same time guarantees eventual maximal CPU parallelism utilization.
+// This approach smooths out unjustified spikes 长钉 of thread unparking,
+// but at the same time guarantees eventual 结果的、最终 maximal CPU parallelism utilization.
 //
-// The main implementation complication is that we need to be very careful during
-// spinning->non-spinning thread transition. This transition can race with submission
+// The main implementation complication 复杂性 is that we need to be very careful during
+// spinning->non-spinning thread transition. This transition can race with submission 提交
 // of a new goroutine, and either one part or another needs to unpark another worker
-// thread. If they both fail to do that, we can end up with semi-persistent CPU
-// underutilization. The general pattern for goroutine readying is: submit a goroutine
+// thread. If they both fail to do that, we can end up with semi-persistent 半持续 CPU
+// underutilization 利用不足. The general pattern for goroutine readying is: submit a goroutine
 // to local work queue, #StoreLoad-style memory barrier, check sched.nmspinning.
 // The general pattern for spinning->non-spinning transition is: decrement nmspinning,
 // #StoreLoad-style memory barrier, check all per-P work queues for new work.
