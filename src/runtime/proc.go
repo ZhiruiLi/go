@@ -80,7 +80,9 @@ var modinfo string
 // for nmspinning manipulation.
 
 var (
-	m0           m
+	// 进程的主线程对应的 m 结构体
+	m0 m
+	// m0 中的 g0
 	g0           g
 	raceprocctx0 uintptr
 )
@@ -458,6 +460,7 @@ func lockedOSThread() bool {
 }
 
 var (
+	// 所有的 g
 	allgs    []*g
 	allglock mutex
 )
@@ -518,6 +521,7 @@ func cpuinit() {
 	arm64HasATOMICS = cpu.ARM64.HasATOMICS
 }
 
+// 对于 linux amd64，这个过程在 asm_amd64.s 的 runtime·rt0_go 中
 // The bootstrap sequence is:
 //
 //	call osinit
@@ -529,17 +533,21 @@ func cpuinit() {
 func schedinit() {
 	// raceinit must be the first call to race detector.
 	// In particular, it must be done before mallocinit below calls racemapshadow.
+	// getg 没有定义，是编译器黑魔法，类似插入这样的汇编：get_tls(CX); MOVQ g(CX), BX;
+	// 这里的 _g_ 就是全局的 g0
 	_g_ := getg()
 	if raceenabled {
 		_g_.racectx, raceprocctx0 = raceinit()
 	}
 
+	// m 的最大值
 	sched.maxmcount = 10000
 
 	tracebackinit()
 	moduledataverify()
 	stackinit()
 	mallocinit()
+	// 初始化 m0，因为全局的 g0 的 m 就是 m0
 	mcommoninit(_g_.m)
 	cpuinit()       // must run before alginit
 	alginit()       // maps must not be used before this call
@@ -556,6 +564,7 @@ func schedinit() {
 	gcinit()
 
 	sched.lastpoll = uint64(nanotime())
+	// 默认情况下 p 的数量就是 ncpu，如果传递了 GOMAXPROCS，则数量修改为 GOMAXPROCS
 	procs := ncpu
 	if n, ok := atoi32(gogetenv("GOMAXPROCS")); ok && n > 0 {
 		procs = n
@@ -601,7 +610,9 @@ func checkmcount() {
 	}
 }
 
+// m 的初始化
 func mcommoninit(mp *m) {
+	// 对于 m0 这里拿到的是 g0
 	_g_ := getg()
 
 	// g0 stack won't make sense for user (and is not necessary unwindable).
@@ -609,12 +620,14 @@ func mcommoninit(mp *m) {
 		callers(1, mp.createstack[:])
 	}
 
+	// 获取这个 m 的 ID，并将全局调度器中的 m 计数增加
 	lock(&sched.lock)
 	if sched.mnext+1 < sched.mnext {
 		throw("runtime: thread ID overflow")
 	}
 	mp.id = sched.mnext
 	sched.mnext++
+	// 检查 m 的数量，确保不超过最大值（10000）
 	checkmcount()
 
 	mp.fastrand[0] = 1597334677 * uint32(mp.id)
@@ -623,6 +636,7 @@ func mcommoninit(mp *m) {
 		mp.fastrand[1] = 1
 	}
 
+	// 创建用于信号处理的 gsignal（就是一个 g）
 	mpreinit(mp)
 	if mp.gsignal != nil {
 		mp.gsignal.stackguard1 = mp.gsignal.stack.lo + _StackGuard
@@ -630,6 +644,7 @@ func mcommoninit(mp *m) {
 
 	// Add to allm so garbage collector doesn't free g->m
 	// when it is just in a register or thread-local storage.
+	// 将这个 m 挂到全局的列表中（目的是防止被 GC 释放）
 	mp.alllink = allm
 
 	// NumCgoCall() iterates over allm w/o schedlock,
@@ -1143,9 +1158,13 @@ func startTheWorldWithSema(emitTraceEvent bool) int64 {
 //
 //go:nosplit
 //go:nowritebarrierrec
+// m 的执行入口
+// m0 的 mstart 在 asm_amd64.s 的 runtime·rt0_go 中调用
 func mstart() {
 	_g_ := getg()
 
+	// 也即 g 还没初始化
+	// 对于 g0 而言，肯定是已经初始化了，所以此处 stack 的两个指针肯定不是 0
 	osStack := _g_.stack.lo == 0
 	if osStack {
 		// Initialize stack bounds from system stack.
@@ -1187,8 +1206,13 @@ func mstart1() {
 	// for terminating the thread.
 	// We're never coming back to mstart1 after we call schedule,
 	// so other calls can reuse the current frame.
+	// getcallerpc 获取 mstart1 被调用时的程序计数器
+	// getcallersp 获取 mstart1 被调用时的栈顶地址
+	// 这里会将这些寄存器的数据记录到当前 g 的 sched 里
 	save(getcallerpc(), getcallersp())
+	// linux 下是空的调用
 	asminit()
+	// 信号初始化之类的工作
 	minit()
 
 	// Install signal handlers; after minit so that minit can
@@ -1205,6 +1229,7 @@ func mstart1() {
 		acquirep(_g_.m.nextp.ptr())
 		_g_.m.nextp = 0
 	}
+	// 开始调度，这个函数不会返回
 	schedule()
 }
 
@@ -2134,9 +2159,12 @@ func gcstopm() {
 // acquiring a P in several places.
 //
 //go:yeswritebarrierrec
+// 将给定的 g 调度到本 m 上执行
 func execute(gp *g, inheritTime bool) {
+	// 这里获取的是当前执行的 g，gp 是将要被执行的 g
 	_g_ := getg()
 
+	// 设置 gp 的状态为 running
 	casgstatus(gp, _Grunnable, _Grunning)
 	gp.waitsince = 0
 	gp.preempt = false
@@ -2144,6 +2172,7 @@ func execute(gp *g, inheritTime bool) {
 	if !inheritTime {
 		_g_.m.p.ptr().schedtick++
 	}
+	// 将 g 和 m 关联起来
 	_g_.m.curg = gp
 	gp.m = _g_.m
 
@@ -2162,11 +2191,15 @@ func execute(gp *g, inheritTime bool) {
 		traceGoStart()
 	}
 
+	// 这里将给定的 g 真正替代当前的 g
+	// 这个函数用汇编实现，因为需要保存和修改寄存器里的状态，使用 go 无法做到
+	// 参考 asm_amd64.s 中的 runtime·gogo
 	gogo(&gp.sched)
 }
 
 // Finds a runnable goroutine to execute.
 // Tries to steal from other P's, get g from global queue, poll network.
+// 找到可以执行的 goroutine
 func findrunnable() (gp *g, inheritTime bool) {
 	_g_ := getg()
 
@@ -2175,6 +2208,7 @@ func findrunnable() (gp *g, inheritTime bool) {
 	// an M.
 
 top:
+	// gc
 	_p_ := _g_.m.p.ptr()
 	if sched.gcwaiting != 0 {
 		gcstopm()
@@ -2193,11 +2227,13 @@ top:
 	}
 
 	// local runq
+	// 还是要优先查看一下本地的 runq
 	if gp, inheritTime := runqget(_p_); gp != nil {
 		return gp, inheritTime
 	}
 
 	// global runq
+	// 如果本地没有，那就查看全局的 runq
 	if sched.runqsize != 0 {
 		lock(&sched.lock)
 		gp := globrunqget(_p_, 0)
@@ -2207,6 +2243,7 @@ top:
 		}
 	}
 
+	// 网络操作，忽略。
 	// Poll network.
 	// This netpoll is only an optimization before we resort to stealing.
 	// We can safely skip it if there are no waiters or a thread is blocked
@@ -2342,6 +2379,7 @@ stop:
 	}
 
 	// Check for idle-priority GC work again.
+	// 这里在做 GC 相关的工作，略去不看
 	if gcBlackenEnabled != 0 && gcMarkWorkAvailable(nil) {
 		lock(&sched.lock)
 		_p_ = pidleget()
@@ -2362,6 +2400,7 @@ stop:
 	}
 
 	// poll network
+	// 这块在做网络相关的操作，略去不看
 	if netpollinited() && atomic.Load(&netpollWaiters) > 0 && atomic.Xchg64(&sched.lastpoll, 0) != 0 {
 		if _g_.m.p != 0 {
 			throw("findrunnable: netpoll with p")
@@ -2458,6 +2497,9 @@ func injectglist(glist *gList) {
 
 // One round of scheduler: find a runnable goroutine and execute it.
 // Never returns.
+// 开始调度
+// 这里的过程是：schedule -> execute -> gogo -> 用户代码 -> goexit -> goexit1 -> mcall -> goexit0 -> schedule
+// 所以这里 schedule 永远都不会返回
 func schedule() {
 	_g_ := getg()
 
@@ -2477,6 +2519,7 @@ func schedule() {
 	}
 
 top:
+	// 这里是一些 gc 的处理
 	if sched.gcwaiting != 0 {
 		gcstopm()
 		goto top
@@ -2504,23 +2547,32 @@ top:
 		gp = gcController.findRunnableGCWorker(_g_.m.p.ptr())
 		tryWakeP = tryWakeP || gp != nil
 	}
+
 	if gp == nil {
 		// Check the global runnable queue once in a while to ensure fairness.
 		// Otherwise two goroutines can completely occupy the local runqueue
 		// by constantly respawning each other.
+		// 为了确保调度的公平性，每调度 61 次就会优先调度一次全局队列中的 g
 		if _g_.m.p.ptr().schedtick%61 == 0 && sched.runqsize > 0 {
+			// 全局队列的访问需要加锁因此效率较低，这也是局部队列存在的目的之一
 			lock(&sched.lock)
+			// 从全局队列中拿出一个 g
 			gp = globrunqget(_g_.m.p.ptr(), 1)
+			// 解锁
 			unlock(&sched.lock)
 		}
 	}
 	if gp == nil {
+		// 从局部队列中拿一个 g
+		// 这里通过当前 g 的 m，也即当前 m 关联的 p 中拿到一个 g
 		gp, inheritTime = runqget(_g_.m.p.ptr())
+		// m 不应该存在于自旋状态，因为 m 取窃取别的 g 时才会自旋，此时获取本地队列不应该自旋
 		if gp != nil && _g_.m.spinning {
 			throw("schedule: spinning with local work")
 		}
 	}
 	if gp == nil {
+		// 尝试去找到可执行的 g，如果找不到就睡眠
 		gp, inheritTime = findrunnable() // blocks until work is available
 	}
 
@@ -2562,6 +2614,7 @@ top:
 		goto top
 	}
 
+	// 具体开始执行这个 g
 	execute(gp, inheritTime)
 }
 
@@ -3987,6 +4040,7 @@ func (pp *p) destroy() {
 // gcworkbufs are not being modified by either the GC or
 // the write barrier code.
 // Returns list of Ps with local work, they need to be scheduled by the caller.
+// 创建和初始化 p
 func procresize(nprocs int32) *p {
 	old := gomaxprocs
 	if old < 0 || nprocs <= 0 {
@@ -4755,6 +4809,9 @@ const randomizeScheduler = raceenabled
 // If next is true, runqput puts g in the _p_.runnext slot.
 // If the run queue is full, runnext puts g on the global queue.
 // Executed only by the owner P.
+// 尝试将 g 放入本地队列
+// 若 next == true，则有 50% 的概率将 g 放入 runnext（优先被执行）
+// 若本地队列满了，则将其放入全局队列
 func runqput(_p_ *p, gp *g, next bool) {
 	if randomizeScheduler && next && fastrand()%2 == 0 {
 		next = false
@@ -4767,10 +4824,10 @@ func runqput(_p_ *p, gp *g, next bool) {
 			goto retryNext
 		}
 		if oldnext == 0 {
-			return
+			return // 之前 runnext 为空，此时不需要继续插入了，可以直接返回
 		}
 		// Kick the old runnext out to the regular run queue.
-		gp = oldnext.ptr()
+		gp = oldnext.ptr() // 替换了 gp，接下来是将之前的 runnext 放入队列中
 	}
 
 retry:
@@ -4833,6 +4890,7 @@ func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
 // If inheritTime is true, gp should inherit the remaining time in the
 // current time slice. Otherwise, it should start a new time slice.
 // Executed only by the owner P.
+// 从本地的队列中获取一个 g
 func runqget(_p_ *p) (gp *g, inheritTime bool) {
 	// If there's a runnext, it's the next G to run.
 	for {
@@ -4840,18 +4898,24 @@ func runqget(_p_ *p) (gp *g, inheritTime bool) {
 		if next == 0 {
 			break
 		}
+		// 优先获取 runnext
+		// 如果获取到了，那就可以直接返回了
 		if _p_.runnext.cas(next, 0) {
 			return next.ptr(), true
 		}
 	}
 
 	for {
+		// 原子获取 runqhead，由于存在工作窃取的逻辑，所以这里和上面都需要原子操作
 		h := atomic.LoadAcq(&_p_.runqhead) // load-acquire, synchronize with other consumers
+		// 直接获取 runqtail，这里不需要原子获取，因为往队列里添加的操作只可能是本线程的处理
 		t := _p_.runqtail
-		if t == h {
+		if t == h { // 队列是空的，直接返回了
 			return nil, false
 		}
+		// 拿到 runqhead 位置的数据（runqhead 是不断累加的，这里需要求模值以确保不越界）
 		gp := _p_.runq[h%uint32(len(_p_.runq))].ptr()
+		// runqhead 原子 + 1
 		if atomic.CasRel(&_p_.runqhead, h, h+1) { // cas-release, commits consume
 			return gp, false
 		}
@@ -4867,7 +4931,7 @@ func runqgrab(_p_ *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool
 		h := atomic.LoadAcq(&_p_.runqhead) // load-acquire, synchronize with other consumers
 		t := atomic.LoadAcq(&_p_.runqtail) // load-acquire, synchronize with the producer
 		n := t - h
-		n = n - n/2
+		n = n - n/2 // n/2 或 n/2 + 1
 		if n == 0 {
 			if stealRunNextG {
 				// Try to steal from _p_.runnext.
@@ -4901,6 +4965,9 @@ func runqgrab(_p_ *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool
 			}
 			return 0
 		}
+		// 这里需要进行判断，由于 h 和 t 的读取是两个原子操作，可能会出现 h 获取之后，
+		// h 和 t 都发生了比较大的变化以至于 n/2 > len/2，
+		// 如果出现了这种情况，就应该再次获取，避免出错
 		if n > uint32(len(_p_.runq)/2) { // read inconsistent h and t
 			continue
 		}
@@ -4908,6 +4975,7 @@ func runqgrab(_p_ *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool
 			g := _p_.runq[(h+i)%uint32(len(_p_.runq))]
 			batch[(batchHead+i)%uint32(len(batch))] = g
 		}
+		// 这里进行原子操作，如果发现两次的 h 不一样，那么前面的窃取操作就废弃掉，重新执行
 		if atomic.CasRel(&_p_.runqhead, h, h+n) { // cas-release, commits consume
 			return n
 		}
@@ -4917,6 +4985,8 @@ func runqgrab(_p_ *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool
 // Steal half of elements from local runnable queue of p2
 // and put onto local runnable queue of p.
 // Returns one of the stolen elements (or nil if failed).
+// 工作窃取
+// 每次窃取操作会窃取对方一半的 g
 func runqsteal(_p_, p2 *p, stealRunNextG bool) *g {
 	t := _p_.runqtail
 	n := runqgrab(p2, &_p_.runq, t, stealRunNextG)

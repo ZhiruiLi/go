@@ -11,7 +11,10 @@
 // internal linking. This is the entry point for the program from the
 // kernel for an ordinary -buildmode=exe program. The stack holds the
 // number of arguments and the C-style argv.
+// amd64 cpu 架构下的程序入口
 TEXT _rt0_amd64(SB),NOSPLIT,$-8
+	// 将内核传递过来的 argc 和 argv 放入 DI 和 SI 寄存器中，然后跳转到 runtime·rt0_go
+	// 这个符号也定义在本文件中。
 	MOVQ	0(SP), DI	// argc
 	LEAQ	8(SP), SI	// argv
 	JMP	runtime·rt0_go(SB)
@@ -89,13 +92,22 @@ TEXT runtime·rt0_go(SB),NOSPLIT,$0
 	MOVQ	DI, AX		// argc
 	MOVQ	SI, BX		// argv
 	SUBQ	$(4*8+7), SP		// 2args 2auto
+	// 调整栈顶寄存器的值使其按 16 字节对⻬，也就是让栈顶寄存器 SP 指向的内存的地址为 16 的倍数，
+	// 之所以要按 16 字节对⻬，是因为 CPU 有⼀组 SSE 指令，这些指令中出现的内存地址必须是 16 的倍数
 	ANDQ	$~15, SP
+	// 将 argc 和 argv 搬到新的位置。
 	MOVQ	AX, 16(SP)
 	MOVQ	BX, 24(SP)
 
 	// create istack out of the given (operating system) stack.
 	// _cgo_init may update stackguard.
+	// 初始化 g0
+	// 将 g0 的地址放入 DI 寄存器
+	// 注意这里 SB 寄存器放的是程序地址空间的起始地址，主要用于引用全局符号
 	MOVQ	$runtime·g0(SB), DI
+	// load effective address
+	// *BX = SP - 64*1024 + 104
+	// BX 即 argv
 	LEAQ	(-64*1024+104)(SP), BX
 	MOVQ	BX, g_stackguard0(DI)
 	MOVQ	BX, g_stackguard1(DI)
@@ -180,10 +192,12 @@ needtls:
 	JMP ok
 #endif
 
+	// 初始化 tls
 	LEAQ	runtime·m0+m_tls(SB), DI
 	CALL	runtime·settls(SB)
 
 	// store through it, to make sure it works
+	// 检查 tls 能不能正常工作，如果不行就退出程序
 	get_tls(BX)
 	MOVQ	$0x123, g(BX)
 	MOVQ	runtime·m0+m_tls(SB), AX
@@ -192,11 +206,16 @@ needtls:
 	CALL	runtime·abort(SB)
 ok:
 	// set the per-goroutine and per-mach "registers"
+	// 如果正常初始化 tls 了，就继续执行下面的逻辑
 	get_tls(BX)
+	// CX = g0 的地址
 	LEAQ	runtime·g0(SB), CX
+	// m0.tls[0] = g0 的地址
 	MOVQ	CX, g(BX)
+	// AX = m0 的地址
 	LEAQ	runtime·m0(SB), AX
 
+	// 下面将 m0 和 g0 关联起来
 	// save m->g0 = g0
 	MOVQ	CX, m_g0(AX)
 	// save m0 to g0->m
@@ -210,7 +229,9 @@ ok:
 	MOVQ	24(SP), AX		// copy argv
 	MOVQ	AX, 8(SP)
 	CALL	runtime·args(SB)
+	// osinit 中会设置 ncpu
 	CALL	runtime·osinit(SB)
+	// 整个调度器的初始化，在 proc.go 中
 	CALL	runtime·schedinit(SB)
 
 	// create a new goroutine to start program
