@@ -270,6 +270,15 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 // Channel c must be empty and locked.  send unlocks c with unlockf.
 // sg must already be dequeued from c.
 // ep must be non-nil and point to the heap or the caller's stack.
+//
+// if sg := c.recvq.dequeue(); sg != nil {
+//		// Found a waiting receiver. We pass the value we want to send
+//		// directly to the receiver, bypassing the channel buffer (if any).
+//		send(c, sg, ep, func() { unlock(&c.lock) }, 3)
+//		return true
+//	}
+//
+// c: channel, sg: receiver, ep: element
 func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 	if raceenabled {
 		if c.dataqsiz == 0 {
