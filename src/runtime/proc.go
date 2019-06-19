@@ -3376,6 +3376,21 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callergp *g, callerpc uintpt
 	memclrNoHeapPointers(unsafe.Pointer(&newg.sched), unsafe.Sizeof(newg.sched))
 	newg.sched.sp = sp
 	newg.stktopsp = sp
+	// 这里挺奇怪的，因为 pc 寄存器应该是下一条指令的地址，但是这里将 goexit 存在了 pc 里，
+	// 但是注意一下下面的 gostartcallfn，这个函数对每个 CPU 架构不一样，我们常用的在
+	// sys_x86.go 中可以找到，这里可以看到：
+	//   sp := buf.sp
+	//   if sys.RegSize > sys.PtrSize {
+	//   	sp -= sys.PtrSize
+	//   	*(*uintptr)(unsafe.Pointer(sp)) = 0
+	//   }
+	//   sp -= sys.PtrSize
+	//   *(*uintptr)(unsafe.Pointer(sp)) = buf.pc
+	//   buf.sp = sp
+	//   buf.pc = uintptr(fn)
+	//   buf.ctxt = ctxt
+	// 也就是说，这个地方将 buf.pc 放到了返回地址上，然后将 buf.pc 的值置为函数地址。
+	// 所以 gogo 中获得的 pc 就是正确的了。
 	newg.sched.pc = funcPC(goexit) + sys.PCQuantum // +PCQuantum so that previous instruction is in same function
 	newg.sched.g = guintptr(unsafe.Pointer(newg))
 	gostartcallfn(&newg.sched, fn)
@@ -3407,6 +3422,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callergp *g, callerpc uintpt
 	if trace.enabled {
 		traceGoCreate(newg, newg.startpc)
 	}
+	// 放入队列中，等待调度
 	runqput(_p_, newg, true)
 
 	if atomic.Load(&sched.npidle) != 0 && atomic.Load(&sched.nmspinning) == 0 && mainStarted {
