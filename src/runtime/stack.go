@@ -896,6 +896,7 @@ func round2(x int32) int32 {
 	return 1 << s
 }
 
+// 被 morestack 调用，这里可能会触发抢占
 // Called from runtime·morestack when more stack is needed.
 // Allocate larger stack and relocate to new stack.
 // Stack growth is multiplicative, for constant amortized cost.

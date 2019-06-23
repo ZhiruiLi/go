@@ -122,6 +122,7 @@ func main() {
 	// Max stack size is 1 GB on 64-bit, 250 MB on 32-bit.
 	// Using decimal instead of binary GB and MB because
 	// they look nicer in the stack overflow failure message.
+	// 设置栈的最大大小
 	if sys.PtrSize == 8 {
 		maxstacksize = 1000000000
 	} else {
@@ -1826,6 +1827,7 @@ var newmHandoff struct {
 // Create a new m. It will start off with a call to fn, or else the scheduler.
 // fn needs to be static and not a heap allocated closure.
 // May run with m.p==nil, so write barriers are not allowed.
+// m 启动时会调用 fn：newm -> allocm(_p_, fn) -> mp.mstartfn = fn; mcommoninit(mp)
 //go:nowritebarrierrec
 func newm(fn func(), _p_ *p) {
 	mp := allocm(_p_, fn)
