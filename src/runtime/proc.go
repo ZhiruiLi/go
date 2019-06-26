@@ -2911,9 +2911,12 @@ func reentersyscall(pc, sp uintptr) {
 	_g_.m.syscalltick = _g_.m.p.ptr().syscalltick
 	_g_.sysblocktraced = true
 	_g_.m.mcache = nil
+	// 注意这里解除了 p 和 m 的关系
 	pp := _g_.m.p.ptr()
 	pp.m = 0
+	// 这里记录了一下 p 是哪个，如果返回了，就优先使用这个 p
 	_g_.m.oldp.set(pp)
+	// 注意这里解除了 m 和 p 的关系
 	_g_.m.p = 0
 	atomic.Store(&pp.status, _Psyscall)
 	if sched.gcwaiting != 0 {
