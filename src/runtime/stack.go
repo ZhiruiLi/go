@@ -307,6 +307,7 @@ func stackcache_clear(c *mcache) {
 	unlock(&stackpoolmu)
 }
 
+// 申请一个 stack
 // stackalloc allocates an n byte stack.
 //
 // stackalloc must run on the system stack because it uses per-P
@@ -337,6 +338,17 @@ func stackalloc(n uint32) stack {
 		return stack{uintptr(v), uintptr(v) + uintptr(n)}
 	}
 
+	// 对于小的栈，会存在一个 free list，避免反复的内存分配
+	// 这个 _FixedStack 和 _NumStackOrders 的大小如下，也就是说，
+	// linux 是 2048 * 2 * 2 * 2 * 2 = 32768
+	// 	//   OS               | FixedStack | NumStackOrders
+	//  //   -----------------+------------+---------------
+	//  //   linux/darwin/bsd | 2KB        | 4
+	//  //   windows/32       | 4KB        | 3
+	//  //   windows/64       | 8KB        | 2
+	//  //   plan9            | 4KB        | 3
+	// 而 _StackCacheSize 是 32 * 1024 = 32768
+	// 只要是小于 32768 byte 的，我们都会进行缓存
 	// Small stacks are allocated with a fixed-size free-list allocator.
 	// If we need a stack of a bigger size, we fall back on allocating
 	// a dedicated span.
@@ -349,12 +361,14 @@ func stackalloc(n uint32) stack {
 			n2 >>= 1
 		}
 		var x gclinkptr
+		// 看看 m 有没有 cache
 		c := thisg.m.mcache
 		if stackNoCache != 0 || c == nil || thisg.m.preemptoff != "" {
 			// c == nil can happen in the guts of exitsyscall or
 			// procresize. Just get a stack from the global pool.
 			// Also don't touch stackcache during gc
 			// as it's flushed concurrently.
+			// 如果没有缓存，那就从全局队列中申请一个
 			lock(&stackpoolmu)
 			x = stackpoolalloc(order)
 			unlock(&stackpoolmu)
@@ -369,6 +383,7 @@ func stackalloc(n uint32) stack {
 		}
 		v = unsafe.Pointer(x)
 	} else {
+		// 对于比较大的栈（超过 32k），就不使用 free list，而是重新分配
 		var s *mspan
 		npage := uintptr(n) >> _PageShift
 		log2npage := stacklog2(npage)
@@ -809,6 +824,12 @@ func syncadjustsudogs(gp *g, used uintptr, adjinfo *adjustinfo) uintptr {
 	return sgsize
 }
 
+// 这里申请一个新的 stack 并将旧的复制过去
+// 这里需要注意一下指针是怎么调整的。
+// 首先一个东西如果其声明周期超过了本函数，例如被其他 goroutine 用，那肯定是要分配在堆上了，
+// 但是，如果本函数内进行了某些引用，那应该怎么办？
+// 在 adjustxxx 中会进行一些调整
+//
 // Copies gp's stack to a new stack of a different size.
 // Caller must have changed gp status to Gcopystack.
 //
@@ -1035,6 +1056,8 @@ func newstack() {
 	}
 
 	// Allocate a bigger segment and move the stack.
+	// 栈扩张的形式是每次 * 2
+	// 直到超过 max
 	oldsize := gp.stack.hi - gp.stack.lo
 	newsize := oldsize * 2
 	if newsize > maxstacksize {

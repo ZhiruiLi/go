@@ -2810,6 +2810,7 @@ func save(pc, sp uintptr) {
 	}
 }
 
+// entersyscall 会调用这个函数，在系统调用的前后会插入汇编指令指示即将进入/退出系统调用。
 // The goroutine g is about to enter a system call.
 // Record that it's not using the cpu anymore.
 // This is called only from the go syscall library and cgocall,
@@ -2858,9 +2859,17 @@ func reentersyscall(pc, sp uintptr) {
 	// (See details in comment above.)
 	// Catch calls that might, by replacing the stack guard with something that
 	// will trip any stack check and leaving a flag to tell newstack to die.
+	// 设置了抢占标识
+	// 这里要注意这个函数不可以在会导致栈发生改变的函数中调用
+	// 在 newstack 中有这样的检查
+	// if thisg.m.curg.throwsplit {
+	// 	...
+	// 	throw("runtime: stack split at bad time")
+	// }
 	_g_.stackguard0 = stackPreempt
 	_g_.throwsplit = true
 
+	// 保存现场
 	// Leave SP around for GC and traceback.
 	save(pc, sp)
 	_g_.syscallsp = sp
@@ -2941,6 +2950,9 @@ func entersyscall_gcwait() {
 	unlock(&sched.lock)
 }
 
+// 目前只有
+//   lock_futex.go 和 lock_sema.go 中有这个调用
+// 一般都是调用 entersyscall
 // The same as entersyscall(), but with a hint that the syscall is blocking.
 //go:nosplit
 func entersyscallblock() {
@@ -3279,6 +3291,9 @@ func syscall_runtime_AfterExec() {
 	execLock.unlock()
 }
 
+// 这个函数负责申请一个新的 g
+// 这里会调用 stackalloc 函数
+// 当被 newproc1 调用时，这里 stacksize 传入的是 _StackMin 也就是 2048
 // Allocate a new g, with a stack big enough for stacksize bytes.
 func malg(stacksize int32) *g {
 	newg := new(g)
@@ -3293,6 +3308,7 @@ func malg(stacksize int32) *g {
 	return newg
 }
 
+// go xxx 会被翻译成 newproc 调用
 // Create a new g running fn with siz bytes of arguments.
 // Put it on the queue of g's waiting to run.
 // The compiler turns a go statement into a call to this.
@@ -3309,6 +3325,7 @@ func newproc(siz int32, fn *funcval) {
 	})
 }
 
+// 这里是处理 go 关键字的具体逻辑
 // Create a new g running fn with narg bytes of arguments starting
 // at argp. callerpc is the address of the go statement that created
 // this. The new g is put on the queue of g's waiting to run.
@@ -3332,8 +3349,10 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callergp *g, callerpc uintpt
 	}
 
 	_p_ := _g_.m.p.ptr()
+	// g 有一个 free list，这里尝试从里面拿一个缓存出来
 	newg := gfget(_p_)
 	if newg == nil {
+		// 申请一个新的 g
 		newg = malg(_StackMin)
 		casgstatus(newg, _Gidle, _Gdead)
 		allgadd(newg) // publishes with a g->status of Gdead so GC scanner doesn't look at uninitialized stack.
