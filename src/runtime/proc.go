@@ -2013,6 +2013,7 @@ func startm(_p_ *p, spinning bool) {
 	notewakeup(&mp.park)
 }
 
+// 将 p 交给其他 m，发生于 syscall 或 lock
 // Hands off P from syscall or locked M.
 // Always runs without a P, so write barriers are not allowed.
 //go:nowritebarrierrec
@@ -2020,6 +2021,7 @@ func handoffp(_p_ *p) {
 	// handoffp must start an M in any situation where
 	// findrunnable would return a G to run on _p_.
 
+	// 如果这个 p 还有工作需要处理，就需要启动一个 m 来处理工作
 	// if it has local work, start it straight away
 	if !runqempty(_p_) || sched.runqsize != 0 {
 		startm(_p_, false)
@@ -2030,6 +2032,8 @@ func handoffp(_p_ *p) {
 		startm(_p_, false)
 		return
 	}
+	// 如果当前不存在 spinning 的 m，也会启动一个 m
+	// 这个逻辑存在的目的是要维持“最后一个 spinning m 结束 spinning 的时候启动一个新的 spinning m 的逻辑”
 	// no local work, check that there are no spinning/idle M's,
 	// otherwise our help is not required
 	if atomic.Load(&sched.nmspinning)+atomic.Load(&sched.npidle) == 0 && atomic.Cas(&sched.nmspinning, 0, 1) { // TODO: fast atomic
@@ -2053,11 +2057,13 @@ func handoffp(_p_ *p) {
 			notewakeup(&sched.safePointNote)
 		}
 	}
+	// 如果全局队列中有工作，那也启动一个 m
 	if sched.runqsize != 0 {
 		unlock(&sched.lock)
 		startm(_p_, false)
 		return
 	}
+	// 如果这是最后一个正在执行的 p 且没有正在等待网络的 g，也应该启动一个 m，否则就没法继续执行了
 	// If this is the last running P and nobody is polling network,
 	// need to wakeup another M to poll network.
 	if sched.npidle == uint32(gomaxprocs-1) && atomic.Load64(&sched.lastpoll) != 0 {
@@ -2065,6 +2071,7 @@ func handoffp(_p_ *p) {
 		startm(_p_, false)
 		return
 	}
+	// 如果上面的逻辑全部都不成立，就让 p 休眠
 	pidleput(_p_)
 	unlock(&sched.lock)
 }
