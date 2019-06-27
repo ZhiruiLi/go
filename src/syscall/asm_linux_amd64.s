@@ -65,6 +65,16 @@ ok6:
 	CALL	runtime·exitsyscall(SB)
 	RET
 
+// RawSyscall 和 Syscall 的区别在于 RawSyscall 不会调用
+//   runtime·entersyscall
+// 这个函数，这样，这个 goroutine 就不会通知运行时它正在系统调用中，导致不会被运行时的 handoffp
+// 因此这个函数会导致阻塞：
+//   Yes, if you call RawSyscall you may block other goroutines from running.
+//   The system monitor may start them up after a while, but I think there are 
+//   cases where it won't. I would say that Go programs should always call 
+//   Syscall. RawSyscall exists to make it slightly more efficient to call 
+//   system calls that never block, such as getpid. But it's really an internal 
+//   mechanism.
 // func RawSyscall(trap, a1, a2, a3 uintptr) (r1, r2, err uintptr)
 TEXT ·RawSyscall(SB),NOSPLIT,$0-56
 	MOVQ	a1+8(FP), DI

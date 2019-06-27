@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+// 这个文件中定义的 low level syscall 不会在首尾包装 entersyscall 和 exitsyscall
+// 因此，这些调用不会被运行时感知到，也就是不会导致 handoffp。
+
 //
 // System calls and other sys.stuff for AMD64, Linux
 //

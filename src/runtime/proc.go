@@ -2818,6 +2818,23 @@ func save(pc, sp uintptr) {
 }
 
 // entersyscall 会调用这个函数，在系统调用的前后会插入汇编指令指示即将进入/退出系统调用。
+// 注意不是所有的系统调用都会触发这个逻辑，有些调用是不被 entersyscall 和 exitsyscall
+// 包裹的，例如 write（sys_linux_amd64.s），
+//   TEXT runtime·write(SB),NOSPLIT,$0-28
+//   MOVQ	fd+0(FP), DI
+//   MOVQ	p+8(FP), SI
+//   MOVL	n+16(FP), DX
+//   MOVL	$SYS_write, AX
+//   SYSCALL
+//   CMPQ	AX, $0xfffffffffffff001
+//   JLS	2(PC)
+//   MOVL	$-1, AX
+//   MOVL	AX, ret+24(FP)
+//   RET
+// 这种情况下，这些调用是不会被调度走的
+// cgo 也是用了 entersyscall 的，参考 cgocall.go 中的 func cgocall
+// 也就是说，如果 cgo 中阻塞了，也会导致运行时强制 handoffp，这可能会导致线程数量的上涨。
+//
 // The goroutine g is about to enter a system call.
 // Record that it's not using the cpu anymore.
 // This is called only from the go syscall library and cgocall,
@@ -2881,6 +2898,8 @@ func reentersyscall(pc, sp uintptr) {
 	save(pc, sp)
 	_g_.syscallsp = sp
 	_g_.syscallpc = pc
+	// 这里设置的是 g 的状态，但是 p 的状态呢？
+	// p 的状态在下面设置 atomic.Store(&pp.status, _Psyscall)
 	casgstatus(_g_, _Grunning, _Gsyscall)
 	if _g_.syscallsp < _g_.stack.lo || _g_.stack.hi < _g_.syscallsp {
 		systemstack(func() {
@@ -2915,9 +2934,12 @@ func reentersyscall(pc, sp uintptr) {
 	pp := _g_.m.p.ptr()
 	pp.m = 0
 	// 这里记录了一下 p 是哪个，如果返回了，就优先使用这个 p
+	// 不直接使用 p 字段记录的原因是为了表意清晰
 	_g_.m.oldp.set(pp)
 	// 注意这里解除了 m 和 p 的关系
 	_g_.m.p = 0
+	// 这里设置 p 的状态为 syscall，在 retake 中检查 p 的状态
+	// 如果 p 的状态为 syscall 就会触发调度逻辑
 	atomic.Store(&pp.status, _Psyscall)
 	if sched.gcwaiting != 0 {
 		systemstack(entersyscall_gcwait)
@@ -3014,6 +3036,7 @@ func entersyscallblock_handoff() {
 	handoffp(releasep())
 }
 
+// 系统调用结束后调用该函数
 // The goroutine g exited its system call.
 // Arrange for it to run on a cpu again.
 // This is called only from the go syscall library, not
@@ -3034,6 +3057,7 @@ func exitsyscall() {
 	_g_.waitsince = 0
 	oldp := _g_.m.oldp.ptr()
 	_g_.m.oldp = 0
+	// 找回之前保留的 p 或者找到一个空闲的 p
 	if exitsyscallfast(oldp) {
 		if _g_.m.mcache == nil {
 			throw("lost mcache")
@@ -3085,6 +3109,8 @@ func exitsyscall() {
 
 	_g_.m.locks--
 
+	// 如果实在没有办法找到一个 p 来执行这个返回的 g，就只能将栈切回 g0 执行
+	// exitsyscall0 了
 	// Call the scheduler.
 	mcall(exitsyscall0)
 
@@ -3188,29 +3214,42 @@ func exitsyscallfast_pidle() bool {
 func exitsyscall0(gp *g) {
 	_g_ := getg()
 
+	// 设置 g 的状态
 	casgstatus(gp, _Gsyscall, _Grunnable)
 	dropg()
+	// 进行全局加锁
 	lock(&sched.lock)
 	var _p_ *p
 	if schedEnabled(_g_) {
+		// 依然尝试获得一下空闲的 p
 		_p_ = pidleget()
 	}
 	if _p_ == nil {
+		// 如果没有空闲的 p，就将 g 放进全局队列
 		globrunqput(gp)
 	} else if atomic.Load(&sched.sysmonwait) != 0 {
 		atomic.Store(&sched.sysmonwait, 0)
 		notewakeup(&sched.sysmonnote)
 	}
+	// 注意上面不管有没有空闲的 p 都没有返回，这里解锁
 	unlock(&sched.lock)
+	// 如果上面找到了空闲的 p，则此时 g 没有放进全局队列，就将本 m 和 p 进行绑定
+	// 然后执行刚刚返回的 g
 	if _p_ != nil {
 		acquirep(_p_)
+		// 这里不会返回
 		execute(gp, false) // Never returns.
 	}
+
+	// 走到这下面说明上面没能成功获取到空闲的 p，
+	// 此时这里检查的是锁，为什么可以 execute，不是已经放到全局队列中了吗？
+	// 这里暂时忽略吧。
 	if _g_.m.lockedg != 0 {
 		// Wait until another thread schedules gp and so m again.
 		stoplockedm()
 		execute(gp, false) // Never returns.
 	}
+	// 前面已经将 g 放到了全局队列中，可以直接休眠了
 	stopm()
 	schedule() // Never returns.
 }
@@ -4586,6 +4625,8 @@ func preemptall() bool {
 // Grunning
 func preemptone(_p_ *p) bool {
 	mp := _p_.m.ptr()
+	// 当处于 syscall 的情况下，不会走后面的逻辑，因为 syscall 时 p 和 m 解绑了，
+	// 这里获得的 mp 为空
 	if mp == nil || mp == getg().m {
 		return false
 	}
